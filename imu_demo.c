@@ -41,15 +41,12 @@
 uint slice_num_l;
 uint slice_num_r;
 
-// GPIO for button pin
-// #define BUTTON_PIN 15
-
 // Min and max motor control values
-// #define MAX_CTRL 3500
-// #define MIN_CTRL 0
+#define MAX_CTRL 4000
+#define MIN_CTRL -4000
 
 // Bias for the z-axis acceleration
-// #define az_bias float2fix15(0.18)
+#define az_bias float2fix15(0.22)
 
 // Starting time to keep track of when the angle sequence playback started
 static int begin_time;
@@ -57,7 +54,6 @@ static int begin_time;
 // Arrays in which raw measurements will be stored
 fix15 acceleration[3], gyro[3];
 fix15 complementary_angle;
-fix15 ay_prev, az_prev;
 fix15 accel_angle, gyro_angle;
 
 volatile int target_angle = 0;
@@ -94,42 +90,41 @@ void on_pwm_wrap() {
     // Clear the interrupt flag that brought us here
     pwm_clear_irq(slice_num_l);
 
-    /*// Read the IMU
+    // Read the IMU
     // NOTE! This is in 15.16 fixed point. Accel in g's, gyro in deg/s
     mpu6050_read_raw(acceleration, gyro);
 
     // Complementary filter
     // Don't need ax because we are just rotating about the x axis
-    fix15 ay = acceleration[1];
+    fix15 ax = acceleration[0];
     fix15 az = acceleration[2] + az_bias;
 
-    // Low pass the values before putting it into the arctan so we can minimize the bias
-    fix15 ay_lowpass = ay_prev + ((ay - ay_prev) >> 8);
-    fix15 az_lowpass = az_prev + ((az - az_prev) >> 8);
-    ay_prev = ay_lowpass;
-    az_prev = az_lowpass;
-    // tan = opposite/adjacent = a_z/-a_y (atan2 takes args in reverse order)
-    accel_angle = multfix15(float2fix15(atan2(-ay_lowpass, az_lowpass)), oneeightyoverpi);
+    // tan = opposite/adjacent = a_z/-a_x (atan2 takes args in reverse order)
+    accel_angle = multfix15(divfix(ax, az), oneeightyoverpi);
 
-    // We are rotating about the x axis
-    fix15 gyro_angle_delta = multfix15(gyro[0], zeropt001);
+    // We are rotating about the y axis
+    fix15 gy = -gyro[1];
+    fix15 gyro_angle_delta = multfix15(gy, zeropt001);
     gyro_angle = complementary_angle - gyro_angle_delta;
 
     // Complementary angle (degrees - 15.16 fixed point)
-    complementary_angle = multfix15(gyro_angle, zeropt99) + multfix15(accel_angle, zeropt01);
+    complementary_angle = multfix15(gyro_angle, zeropt999) + multfix15(accel_angle, zeropt001);
     float error = target_angle - fix2float15(complementary_angle);
 
-    // Accumulate and clamp error sum for integration term
+    /*// Accumulate and clamp error sum for integration term
     error_sum += error;
     error_sum = min(error_sum, error_sum_max);
-    error_sum = max(error_sum, -error_sum_max);
+    error_sum = max(error_sum, -error_sum_max);*/
 
     // pi/180=0.01745
-    int PID_output = error * kp + fix2int15(gyro[0]) * kd + error_sum * ki + kg * cos(target_angle * 0.01745);
-    control_l = max(MIN_CTRL, PID_output);
-    control_l = min(control_l, MAX_CTRL);*/
+    // int PID_output = error * kp + fix2int15(gy) * kd + error_sum * ki + kg * cos(target_angle * 0.01745);
 
-    // printf("l: %d, r: %d\n", control_l, control_r);
+    // negate PID output so robot stays upright
+    int PID_output = -(error * kp);
+    control_l = max(MIN_CTRL, PID_output);
+    control_l = min(control_l, MAX_CTRL);
+    control_r = -control_l;
+
     // Update duty cycle
     if (control_l > 0) {
         pwm_set_chan_level(slice_num_l, PWM_CHAN_A, control_l);
@@ -148,7 +143,7 @@ void on_pwm_wrap() {
     }
 
     // Signal VGA to draw
-    // PT_SEM_SIGNAL(pt, &vga_semaphore);
+    PT_SEM_SIGNAL(pt, &vga_semaphore);
 }
 
 // Thread that draws to VGA display
@@ -219,9 +214,9 @@ static PT_THREAD(protothread_vga(struct pt *pt)) {
             drawPixel(xcoord, 430 - (int)(NewRange * ((float)((filtered_control * 0.0714) - OldMin) / OldRange)), ORANGE);
 
             // Draw top plot (multiply by 2.8  to scale from +/-90 to +/-250)
+            // drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(gyro_angle) * 2.8) - OldMin) / OldRange)), RED);
+            // drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(accel_angle) * 2.8) - OldMin) / OldRange)), GREEN);
             drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(complementary_angle) * 2.8) - OldMin) / OldRange)), WHITE);
-            drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(gyro_angle) * 2.8) - OldMin) / OldRange)), RED);
-            drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(accel_angle) * 2.8) - OldMin) / OldRange)), GREEN);
             drawPixel(xcoord, 230 - (int)(NewRange * ((float)(((target_angle) * 2.8) - OldMin) / OldRange)), BLUE);
 
             // Update horizontal cursor
@@ -256,54 +251,52 @@ static PT_THREAD(protothread_serial(struct pt *pt)) {
         // convert input string to number
         sscanf(pt_serial_in_buffer, "%c", &classifier);
 
-        // if (classifier == 't') {
-        //     sprintf(pt_serial_out_buffer, "timestep: ");
-        //     serial_write;
-        //     serial_read;
-        //     // convert input string to number
-        //     sscanf(pt_serial_in_buffer, "%d", &test_in);
-        //     if (test_in > 0) {
-        //         threshold = test_in;
-        //     }
-        // } else if (classifier == 'p') {
-        //     sprintf(pt_serial_out_buffer, "kp: ");
-        //     serial_write;
-        //     serial_read;
-        //     // convert input string to number
-        //     sscanf(pt_serial_in_buffer, "%f", &float_in);
-        //     if (float_in >= 0) {
-        //         kp = float_in;
-        //     }
-        // } else if (classifier == 'd') {
-        //     sprintf(pt_serial_out_buffer, "kd: ");
-        //     serial_write;
-        //     serial_read;
-        //     // convert input string to number
-        //     sscanf(pt_serial_in_buffer, "%f", &float_in);
-        //     if (float_in >= 0) {
-        //         kd = float_in;
-        //     }
-        // } else if (classifier == 'i') {
-        //     sprintf(pt_serial_out_buffer, "ki: ");
-        //     serial_write;
-        //     serial_read;
-        //     // convert input string to number
-        //     sscanf(pt_serial_in_buffer, "%f", &float_in);
-        //     if (float_in >= 0) {
-        //         ki = float_in;
-        //     }
-        // } else if (classifier == 'a') {
-        //     sprintf(pt_serial_out_buffer, "target angle (-90 to 90 degrees): ");
-        //     serial_write;
-        //     serial_read;
-        //     // convert input string to number
-        //     sscanf(pt_serial_in_buffer, "%d", &test_in);
-        //     if (test_in >= -90 && test_in <= 90) {
-        //         target_angle = test_in;
-        //     }
-        // } else
-
-        if (classifier == 'l') {
+        if (classifier == 't') {
+            sprintf(pt_serial_out_buffer, "timestep: ");
+            serial_write;
+            serial_read;
+            // convert input string to number
+            sscanf(pt_serial_in_buffer, "%d", &test_in);
+            if (test_in > 0) {
+                threshold = test_in;
+            }
+        } else if (classifier == 'p') {
+            sprintf(pt_serial_out_buffer, "kp: ");
+            serial_write;
+            serial_read;
+            // convert input string to number
+            sscanf(pt_serial_in_buffer, "%f", &float_in);
+            if (float_in >= 0) {
+                kp = float_in;
+            }
+        } else if (classifier == 'd') {
+            sprintf(pt_serial_out_buffer, "kd: ");
+            serial_write;
+            serial_read;
+            // convert input string to number
+            sscanf(pt_serial_in_buffer, "%f", &float_in);
+            if (float_in >= 0) {
+                kd = float_in;
+            }
+        } else if (classifier == 'i') {
+            sprintf(pt_serial_out_buffer, "ki: ");
+            serial_write;
+            serial_read;
+            // convert input string to number
+            sscanf(pt_serial_in_buffer, "%f", &float_in);
+            if (float_in >= 0) {
+                ki = float_in;
+            }
+        } else if (classifier == 'a') {
+            sprintf(pt_serial_out_buffer, "target angle (-90 to 90 degrees): ");
+            serial_write;
+            serial_read;
+            // convert input string to number
+            sscanf(pt_serial_in_buffer, "%d", &test_in);
+            if (test_in >= -90 && test_in <= 90) {
+                target_angle = test_in;
+            }
+        } else if (classifier == 'l') {
             sprintf(pt_serial_out_buffer, "control_l: ");
             serial_write;
             serial_read;
@@ -314,7 +307,7 @@ static PT_THREAD(protothread_serial(struct pt *pt)) {
             serial_write;
             serial_read;
             sscanf(pt_serial_in_buffer, "%d", &test_in);
-            control_r = test_in;
+            control_r = -test_in;
         } else {
             sprintf(pt_serial_out_buffer, "invalid command");
             serial_write;
@@ -324,13 +317,10 @@ static PT_THREAD(protothread_serial(struct pt *pt)) {
 }
 
 // Entry point for core 1
-// todo see if want angle seq playback on core 1 or 0
-// todo dc for any concurrecny bugs since two diff threads
-// do not want angle seq palyback on core 1 it will freeze the screen want it on core 0
-// void core1_entry() {
-//     pt_add_thread(protothread_vga);
-//     pt_schedule_start;
-// }
+void core1_entry() {
+    pt_add_thread(protothread_vga);
+    pt_schedule_start;
+}
 
 int main() {
 
@@ -341,17 +331,17 @@ int main() {
     stdio_init_all();
 
     // Initialize VGA
-    // initVGA();
+    initVGA();
 
     ////////////////////////////////////////////////////////////////////////
     ///////////////////////// I2C CONFIGURATION ////////////////////////////
-    // i2c_init(I2C_CHAN, I2C_BAUD_RATE);
-    // gpio_set_function(SDA_PIN, GPIO_FUNC_I2C);
-    // gpio_set_function(SCL_PIN, GPIO_FUNC_I2C);
+    i2c_init(I2C_CHAN, I2C_BAUD_RATE);
+    gpio_set_function(SDA_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(SCL_PIN, GPIO_FUNC_I2C);
 
     // MPU6050 initialization
-    // mpu6050_reset();
-    // mpu6050_read_raw(acceleration, gyro);
+    mpu6050_reset();
+    mpu6050_read_raw(acceleration, gyro);
 
     ////////////////////////////////////////////////////////////////////////
     ///////////////////////// PWM CONFIGURATION ////////////////////////////
@@ -396,8 +386,8 @@ int main() {
     ///////////////////////////// ROCK AND ROLL ////////////////////////////
     ////////////////////////////////////////////////////////////////////////
     // start core 1
-    // multicore_reset_core1();
-    // multicore_launch_core1(core1_entry);
+    multicore_reset_core1();
+    multicore_launch_core1(core1_entry);
 
     // start core 0
     pt_add_thread(protothread_serial);
