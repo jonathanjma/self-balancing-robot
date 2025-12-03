@@ -38,12 +38,13 @@
 // Some paramters for PWM
 #define WRAPVAL 5000
 #define CLKDIV 25.0
-uint slice_num_l;
+uint slice_num_l; ///todo later swithc based on orientation of robot
 uint slice_num_r;
 
 // Min and max motor control values
 #define MAX_CTRL 4000
 #define MIN_CTRL -4000
+#define MIN_DUTY_CYCLE 1100 //minimmum duty cycle to get the motors moving
 
 // Bias for the z-axis acceleration
 #define az_bias float2fix15(0.22)
@@ -56,7 +57,7 @@ fix15 acceleration[3], gyro[3];
 fix15 complementary_angle;
 fix15 accel_angle, gyro_angle;
 
-volatile int target_angle = 0;
+volatile int target_angle = 0; //always want target angle to be 0 because that is it facing upwards
 
 // Character array for VGA graph text
 char screentext[40];
@@ -76,8 +77,8 @@ volatile int filtered_control = 0;
 volatile int filtered_old_control = 0;
 
 // PID parameters
-volatile float kp = 100;
-volatile float kd = 55;
+volatile float kp = 350;
+volatile float kd = 300;
 volatile float ki = 0.1;
 volatile float kg = 2300; // max total I term at horizontal
 
@@ -120,27 +121,69 @@ void on_pwm_wrap() {
     // int PID_output = error * kp + fix2int15(gy) * kd + error_sum * ki + kg * cos(target_angle * 0.01745);
 
     // negate PID output so robot stays upright
-    int PID_output = -(error * kp);
-    control_l = max(MIN_CTRL, PID_output);
-    control_l = min(control_l, MAX_CTRL);
-    control_r = -control_l;
-
-    // Update duty cycle
-    if (control_l > 0) {
-        pwm_set_chan_level(slice_num_l, PWM_CHAN_A, control_l);
-        pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
-    } else {
-        pwm_set_chan_level(slice_num_l, PWM_CHAN_A, 0);
-        pwm_set_chan_level(slice_num_l, PWM_CHAN_B, abs(control_l));
+    int PID_output = (error * kp) + fix2int15(gy) * kd ;
+    if(PID_output > MAX_CTRL){
+        PID_output = MAX_CTRL;
     }
-    if (control_r > 0) {
-        pwm_set_chan_level(slice_num_r, PWM_CHAN_A, control_r);
-        pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
-
-    } else {
-        pwm_set_chan_level(slice_num_r, PWM_CHAN_A, 0);
-        pwm_set_chan_level(slice_num_r, PWM_CHAN_B, abs(control_r));
+    else if(PID_output < MIN_CTRL){
+        PID_output = MIN_CTRL;
     }
+    if(PID_output > 0 && PID_output < MIN_DUTY_CYCLE){
+        PID_output = MIN_DUTY_CYCLE;
+    }
+    else if(PID_output < 0 && PID_output > -MIN_DUTY_CYCLE){
+        PID_output = -MIN_DUTY_CYCLE;
+    }
+    //todo for now both go same dir, later can vary each speed and dir for turning
+
+    // todo first task to just have balance
+    //todo second forwards and backwards
+    // todo thrid turning
+
+    // full charge 1100 pwm is the min needed to get the motors moving
+
+    pwm_set_chan_level(slice_num_l, PWM_CHAN_A, kp);
+    pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
+    pwm_set_chan_level(slice_num_r, PWM_CHAN_A, kp);
+    pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
+
+    // if(PID_output > 0){
+    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_A, PID_output);
+    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
+    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_A, PID_output);
+    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
+    // }
+    // else{
+    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_A, 0);
+    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_B, -PID_output);
+    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_A, 0);
+    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_B, -PID_output);
+    // }
+
+    // control_l = max(MIN_CTRL, PID_output);
+    // control_l = min(control_l, MAX_CTRL);
+    // control_r = -control_l;
+     
+    // pwm_set_chan_level(slice_num_l, PWM_CHAN_A, 0);
+    // pwm_set_chan_level(slice_num_l, PWM_CHAN_B,3000);
+    // // pwm_set_chan_level(slice_num_r, PWM_CHAN_A, 3000);
+    // pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 00);
+    // // Update duty cycle
+    // if (control_l < 0) {
+    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_A, control_l);
+    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
+    // } else {
+    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_A, 0);
+    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_B, abs(control_l));
+    // }
+    // if (control_r < 0) {
+    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_A, control_r);
+    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
+
+    // } else {
+    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_A, 0);
+    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_B, abs(control_r));
+    // }
 
     // Signal VGA to draw
     PT_SEM_SIGNAL(pt, &vga_semaphore);

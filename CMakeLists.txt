@@ -41,3 +41,4 @@ target_link_libraries(MPU6050_IMU pico_stdlib pico_bootsel_via_double_reset pico
 
 # create map/bin/hex file etc.
 pico_add_extra_outputs(MPU6050_IMU)
+
