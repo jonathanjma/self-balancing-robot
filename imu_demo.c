@@ -44,7 +44,7 @@ uint slice_num_r;
 // Min and max motor control values
 #define MAX_CTRL 4000
 #define MIN_CTRL -4000
-#define MIN_DUTY_CYCLE 1100 //minimmum duty cycle to get the motors moving
+#define MIN_DUTY_CYCLE 1900 //minimmum duty cycle to get the motors moving on ground
 
 // Bias for the z-axis acceleration
 #define az_bias float2fix15(0.22)
@@ -77,13 +77,15 @@ volatile int filtered_control = 0;
 volatile int filtered_old_control = 0;
 
 // PID parameters
-volatile float kp = 350;
-volatile float kd = 300;
-volatile float ki = 0.1;
+volatile float kp = 1700;
+volatile float kd = 800;
+volatile float ki = 00;
 volatile float kg = 2300; // max total I term at horizontal
 
 float error_sum = 0;
 float error_sum_max = 4600;
+
+#define IMU_POWER 27
 
 // Interrupt service routine
 void on_pwm_wrap() {
@@ -110,6 +112,12 @@ void on_pwm_wrap() {
 
     // Complementary angle (degrees - 15.16 fixed point)
     complementary_angle = multfix15(gyro_angle, zeropt999) + multfix15(accel_angle, zeropt001);
+    if(fix2float15(complementary_angle) >= 0){
+        target_angle = 0;
+    }
+    else{
+        target_angle = 20; //to fix bias when negative side
+    }
     float error = target_angle - fix2float15(complementary_angle);
 
     /*// Accumulate and clamp error sum for integration term
@@ -142,23 +150,23 @@ void on_pwm_wrap() {
 
     // full charge 1100 pwm is the min needed to get the motors moving
 
-    pwm_set_chan_level(slice_num_l, PWM_CHAN_A, kp);
-    pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
-    pwm_set_chan_level(slice_num_r, PWM_CHAN_A, kp);
-    pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
+    // pwm_set_chan_level(slice_num_l, PWM_CHAN_A, kp);
+    // pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
+    // pwm_set_chan_level(slice_num_r, PWM_CHAN_A, kp);
+    // pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
 
-    // if(PID_output > 0){
-    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_A, PID_output);
-    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
-    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_A, PID_output);
-    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
-    // }
-    // else{
-    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_A, 0);
-    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_B, -PID_output);
-    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_A, 0);
-    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_B, -PID_output);
-    // }
+    if(PID_output > 0){
+        pwm_set_chan_level(slice_num_l, PWM_CHAN_A, PID_output);
+        pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
+        pwm_set_chan_level(slice_num_r, PWM_CHAN_A, PID_output);
+        pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
+    }
+    else{
+        pwm_set_chan_level(slice_num_l, PWM_CHAN_A, 0);
+        pwm_set_chan_level(slice_num_l, PWM_CHAN_B, -PID_output);
+        pwm_set_chan_level(slice_num_r, PWM_CHAN_A, 0);
+        pwm_set_chan_level(slice_num_r, PWM_CHAN_B, -PID_output);
+    }
 
     // control_l = max(MIN_CTRL, PID_output);
     // control_l = min(control_l, MAX_CTRL);
@@ -378,6 +386,12 @@ int main() {
 
     ////////////////////////////////////////////////////////////////////////
     ///////////////////////// I2C CONFIGURATION ////////////////////////////
+    // code to reset the I2C when reboot
+    gpio_init(IMU_POWER);
+    gpio_set_dir(IMU_POWER, GPIO_OUT);
+    gpio_set_drive_strength(IMU_POWER, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_put(IMU_POWER, 1);
+
     i2c_init(I2C_CHAN, I2C_BAUD_RATE);
     gpio_set_function(SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(SCL_PIN, GPIO_FUNC_I2C);
@@ -420,10 +434,7 @@ int main() {
     // Start the channel
     pwm_set_mask_enabled(11u << slice_num_l);
 
-    // code to reset the I2C when reboot todo do
-    // gpio_init(15);
-    // gpio_set_dir(15, GPIO_OUT);
-    // gpio_set_drive_strength(LED_PIN, GPIO_DRIVE_STRENGTH_12MA);
+    
 
     ////////////////////////////////////////////////////////////////////////
     ///////////////////////////// ROCK AND ROLL ////////////////////////////
