@@ -79,13 +79,12 @@ volatile int filtered_old_control = 0;
 // PID parameters
 volatile float kp = 1700;
 volatile float kd = 800;
-volatile float ki = 00;
-volatile float kg = 2300; // max total I term at horizontal
+volatile float ki = 35;
 
 float error_sum = 0;
-float error_sum_max = 4600;
+float error_sum_max = 1900;
 
-#define IMU_POWER 27
+#define IMU_POWER 26
 
 // Interrupt service routine
 void on_pwm_wrap() {
@@ -113,23 +112,20 @@ void on_pwm_wrap() {
     // Complementary angle (degrees - 15.16 fixed point)
     complementary_angle = multfix15(gyro_angle, zeropt999) + multfix15(accel_angle, zeropt001);
     if(fix2float15(complementary_angle) >= 0){
-        target_angle = 0;
+        target_angle = -5;
     }
     else{
-        target_angle = 20; //to fix bias when negative side
+        target_angle = 0; //to fix bias when negative side
     }
     float error = target_angle - fix2float15(complementary_angle);
 
-    /*// Accumulate and clamp error sum for integration term
+    // Accumulate and clamp error sum for integration term
     error_sum += error;
     error_sum = min(error_sum, error_sum_max);
-    error_sum = max(error_sum, -error_sum_max);*/
-
-    // pi/180=0.01745
-    // int PID_output = error * kp + fix2int15(gy) * kd + error_sum * ki + kg * cos(target_angle * 0.01745);
+    error_sum = max(error_sum, -error_sum_max);
 
     // negate PID output so robot stays upright
-    int PID_output = (error * kp) + fix2int15(gy) * kd ;
+    int PID_output = (error * kp) + fix2int15(gy) * kd + error_sum * ki;
     if(PID_output > MAX_CTRL){
         PID_output = MAX_CTRL;
     }
@@ -390,7 +386,10 @@ int main() {
     gpio_init(IMU_POWER);
     gpio_set_dir(IMU_POWER, GPIO_OUT);
     gpio_set_drive_strength(IMU_POWER, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_put(IMU_POWER, 0);
+    sleep_ms(1000);
     gpio_put(IMU_POWER, 1);
+    sleep_ms(1000);
 
     i2c_init(I2C_CHAN, I2C_BAUD_RATE);
     gpio_set_function(SDA_PIN, GPIO_FUNC_I2C);
