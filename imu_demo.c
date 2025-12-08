@@ -52,6 +52,13 @@ uint slice_num_r;
 // Starting time to keep track of when the angle sequence playback started
 static int begin_time;
 
+typedef enum {
+  FORWARDS,
+  BACKWARDS,
+  STABLE
+} direction_state_t;
+volatile direction_state_t current_direction  = STABLE; // assume default not pressed
+
 // Arrays in which raw measurements will be stored
 fix15 acceleration[3], gyro[3];
 fix15 complementary_angle;
@@ -64,10 +71,11 @@ char screentext[40];
 char str_buffer[256] = {0}; // string buffer for the PID text to display on the screen
 
 // Draw speed for VGA graph
-int threshold = 10;
+int threshold = 250;
 
 // Semaphores
 static struct pt_sem vga_semaphore;
+static struct pt_sem serial_semaphore;
 static struct pt_sem button_sempahore;
 
 // PWM duty cycle
@@ -79,10 +87,14 @@ volatile int filtered_old_control = 0;
 // PID parameters
 volatile float kp = 1700;
 volatile float kd = 800;
-volatile float ki = 35;
+volatile float ki = 27;
+
+volatile int PID_output;
 
 float error_sum = 0;
-float error_sum_max = 1900;
+float error_sum_max = 2000;
+
+volatile int counter = 0;
 
 #define IMU_POWER 26
 
@@ -111,12 +123,43 @@ void on_pwm_wrap() {
 
     // Complementary angle (degrees - 15.16 fixed point)
     complementary_angle = multfix15(gyro_angle, zeropt999) + multfix15(accel_angle, zeropt001);
-    if(fix2float15(complementary_angle) >= 0){
+    if(current_direction == STABLE){
+        if(fix2float15(complementary_angle) >= 0){ // prevent positive bias/lean
         target_angle = -5;
+        }
+        else{ // address negative bias
+            target_angle = -1;
+        }
     }
     else{
-        target_angle = 0; //to fix bias when negative side
+        if(counter > 0){ // have target angle positive so go backwards
+            counter++; // do it for 200 ms (frequency of ISR is 1000times a second)
+            if(counter >= 30){
+                counter = 0; // reset counter 
+            }
+            if(current_direction == BACKWARDS){
+                target_angle = 4;
+            }
+            else if(current_direction == FORWARDS){
+                target_angle = -7;
+            }
+        }
+        // if equal 0 then stable from the reset above and if negative it is counting to stay negative until 2 seconds has passed
+        else if(counter <= 0){ // keep target angle stable for 2 seconds
+            counter--;
+            if(counter <= -1250){
+                counter = 1; // go back to greater than 0 so go to top conditional of going forwards a bit
+            }
+            // stabalization code
+            if(fix2float15(complementary_angle) >= 0){ // prevent positive bias/lean
+                target_angle = -5;
+                }
+            else{ // address negative bias
+                target_angle = -1;
+            }
+        }
     }
+    
     float error = target_angle - fix2float15(complementary_angle);
 
     // Accumulate and clamp error sum for integration term
@@ -125,7 +168,7 @@ void on_pwm_wrap() {
     error_sum = max(error_sum, -error_sum_max);
 
     // negate PID output so robot stays upright
-    int PID_output = (error * kp) + fix2int15(gy) * kd + error_sum * ki;
+    PID_output = (error * kp) + fix2int15(gy) * kd + error_sum * ki;
     if(PID_output > MAX_CTRL){
         PID_output = MAX_CTRL;
     }
@@ -151,7 +194,7 @@ void on_pwm_wrap() {
     // pwm_set_chan_level(slice_num_r, PWM_CHAN_A, kp);
     // pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
 
-    if(PID_output > 0){
+    if(PID_output <= 0){
         pwm_set_chan_level(slice_num_l, PWM_CHAN_A, PID_output);
         pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
         pwm_set_chan_level(slice_num_r, PWM_CHAN_A, PID_output);
@@ -191,93 +234,124 @@ void on_pwm_wrap() {
 
     // Signal VGA to draw
     PT_SEM_SIGNAL(pt, &vga_semaphore);
+    PT_SEM_SIGNAL(pt, &serial_semaphore);
 }
 
-// Thread that draws to VGA display
-static PT_THREAD(protothread_vga(struct pt *pt)) {
+// // Thread that draws to VGA display
+// static PT_THREAD(protothread_vga(struct pt *pt)) {
+//     // Indicate start of thread
+//     PT_BEGIN(pt);
+
+//     // We will start drawing at column 81
+//     static int xcoord = 81;
+
+//     // Rescale the measurements for display
+//     static float OldRange = 500.; // (+/- 250)
+//     static float NewRange = 150.; // (looks nice on VGA)
+//     static float OldMin = -250.;
+//     static float OldMax = 250.;
+
+//     // Control rate of drawing
+//     static int throttle;
+
+//     // Draw the static aspects of the display
+//     setTextSize(1);
+//     setTextColor(WHITE);
+
+//     // Draw bottom plot
+//     drawHLine(75, 430, 5, CYAN);
+//     drawHLine(75, 355, 5, CYAN);
+//     drawHLine(75, 280, 5, CYAN);
+//     drawVLine(80, 280, 150, CYAN);
+//     sprintf(screentext, "0");
+//     setCursor(50, 350);
+//     writeString(screentext);
+//     sprintf(screentext, "3500");
+//     setCursor(50, 280);
+//     writeString(screentext);
+
+//     // Draw top plot
+//     drawHLine(75, 230, 5, CYAN);
+//     drawHLine(75, 155, 5, CYAN);
+//     drawHLine(75, 80, 5, CYAN);
+//     drawVLine(80, 80, 150, CYAN);
+//     sprintf(screentext, "0");
+//     setCursor(50, 150);
+//     writeString(screentext);
+//     sprintf(screentext, "90");
+//     setCursor(45, 75);
+//     writeString(screentext);
+//     sprintf(screentext, "-90");
+//     setCursor(45, 225);
+//     writeString(screentext);
+
+//     while (true) {
+//         // Wait on semaphore
+//         PT_SEM_WAIT(pt, &vga_semaphore);
+//         // Increment drawspeed controller
+//         throttle += 1;
+//         // If the controller has exceeded a threshold, draw
+//         if (throttle >= threshold) {
+//             // Zero drawspeed controller
+//             throttle = 0;
+
+//             // Erase a column
+//             drawVLine(xcoord, 0, 480, BLACK);
+
+//             // Draw bottom  plot (multiply by 0.089 to scale from +/-3500 to +/-250)
+//             // Low pass motor control signal so the graph is less noisy
+//             filtered_old_control = filtered_control;
+//             filtered_control = filtered_old_control + ((control_l - filtered_old_control) >> 5);
+//             drawPixel(xcoord, 430 - (int)(NewRange * ((float)((filtered_control * 0.0714) - OldMin) / OldRange)), ORANGE);
+
+//             // Draw top plot (multiply by 2.8  to scale from +/-90 to +/-250)
+//             // drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(gyro_angle) * 2.8) - OldMin) / OldRange)), RED);
+//             // drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(accel_angle) * 2.8) - OldMin) / OldRange)), GREEN);
+//             drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(complementary_angle) * 2.8) - OldMin) / OldRange)), WHITE);
+//             drawPixel(xcoord, 230 - (int)(NewRange * ((float)(((target_angle) * 2.8) - OldMin) / OldRange)), BLUE);
+
+//             // Update horizontal cursor
+//             if (xcoord < 609) {
+//                 xcoord += 1;
+//             } else {
+//                 xcoord = 81;
+//             }
+
+//             // Draw PID info text on screen
+//             setTextColorBig(WHITE, BLACK);
+//             setCursor(10, 20);
+//             sprintf(str_buffer, "Kp:  %.2f   Ki: %.2f   Kd: %.2f   Targ_ang: %d     Curr_ang: %d         ", (kp), ki, kd, target_angle, fix2int15(complementary_angle));
+//             writeStringBig(str_buffer);
+//         }
+//     }
+//     // Indicate end of thread
+//     PT_END(pt);
+// }
+
+// Thread for serial monitor to debug instead of the vga
+static PT_THREAD(protothread_serial_core1(struct pt *pt)) {
     // Indicate start of thread
     PT_BEGIN(pt);
 
-    // We will start drawing at column 81
-    static int xcoord = 81;
-
-    // Rescale the measurements for display
-    static float OldRange = 500.; // (+/- 250)
-    static float NewRange = 150.; // (looks nice on VGA)
-    static float OldMin = -250.;
-    static float OldMax = 250.;
+    
 
     // Control rate of drawing
     static int throttle;
 
-    // Draw the static aspects of the display
-    setTextSize(1);
-    setTextColor(WHITE);
-
-    // Draw bottom plot
-    drawHLine(75, 430, 5, CYAN);
-    drawHLine(75, 355, 5, CYAN);
-    drawHLine(75, 280, 5, CYAN);
-    drawVLine(80, 280, 150, CYAN);
-    sprintf(screentext, "0");
-    setCursor(50, 350);
-    writeString(screentext);
-    sprintf(screentext, "3500");
-    setCursor(50, 280);
-    writeString(screentext);
-
-    // Draw top plot
-    drawHLine(75, 230, 5, CYAN);
-    drawHLine(75, 155, 5, CYAN);
-    drawHLine(75, 80, 5, CYAN);
-    drawVLine(80, 80, 150, CYAN);
-    sprintf(screentext, "0");
-    setCursor(50, 150);
-    writeString(screentext);
-    sprintf(screentext, "90");
-    setCursor(45, 75);
-    writeString(screentext);
-    sprintf(screentext, "-90");
-    setCursor(45, 225);
-    writeString(screentext);
-
     while (true) {
         // Wait on semaphore
-        PT_SEM_WAIT(pt, &vga_semaphore);
+        PT_SEM_WAIT(pt, &serial_semaphore);
         // Increment drawspeed controller
         throttle += 1;
         // If the controller has exceeded a threshold, draw
         if (throttle >= threshold) {
             // Zero drawspeed controller
             throttle = 0;
+            // sprintf(pt_serial_out_buffer, "current PID output: %d\n", PID_output);
+            sprintf(pt_serial_out_buffer, "target angle: %d\n", target_angle);
 
-            // Erase a column
-            drawVLine(xcoord, 0, 480, BLACK);
-
-            // Draw bottom  plot (multiply by 0.089 to scale from +/-3500 to +/-250)
-            // Low pass motor control signal so the graph is less noisy
-            filtered_old_control = filtered_control;
-            filtered_control = filtered_old_control + ((control_l - filtered_old_control) >> 5);
-            drawPixel(xcoord, 430 - (int)(NewRange * ((float)((filtered_control * 0.0714) - OldMin) / OldRange)), ORANGE);
-
-            // Draw top plot (multiply by 2.8  to scale from +/-90 to +/-250)
-            // drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(gyro_angle) * 2.8) - OldMin) / OldRange)), RED);
-            // drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(accel_angle) * 2.8) - OldMin) / OldRange)), GREEN);
-            drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(complementary_angle) * 2.8) - OldMin) / OldRange)), WHITE);
-            drawPixel(xcoord, 230 - (int)(NewRange * ((float)(((target_angle) * 2.8) - OldMin) / OldRange)), BLUE);
-
-            // Update horizontal cursor
-            if (xcoord < 609) {
-                xcoord += 1;
-            } else {
-                xcoord = 81;
-            }
-
-            // Draw PID info text on screen
-            setTextColorBig(WHITE, BLACK);
-            setCursor(10, 20);
-            sprintf(str_buffer, "Kp:  %.2f   Ki: %.2f   Kd: %.2f   Targ_ang: %d     Curr_ang: %d         ", (kp), ki, kd, target_angle, fix2int15(complementary_angle));
-            writeStringBig(str_buffer);
+            serial_write;
+            
         }
     }
     // Indicate end of thread
@@ -355,7 +429,24 @@ static PT_THREAD(protothread_serial(struct pt *pt)) {
             serial_read;
             sscanf(pt_serial_in_buffer, "%d", &test_in);
             control_r = -test_in;
-        } else {
+        }
+        else if (classifier == 'm') {
+            sprintf(pt_serial_out_buffer, "positive number to go forwards, negative number to go backwards, 0 to stop: ");
+            serial_write;
+            serial_read;
+            sscanf(pt_serial_in_buffer, "%d", &test_in);
+            if (test_in > 0) {
+                current_direction = FORWARDS;
+            }
+            else if(test_in < 0){
+                current_direction = BACKWARDS;
+            }
+            else{
+                current_direction = STABLE;
+            }
+        } 
+        
+        else {
             sprintf(pt_serial_out_buffer, "invalid command");
             serial_write;
         }
@@ -365,7 +456,8 @@ static PT_THREAD(protothread_serial(struct pt *pt)) {
 
 // Entry point for core 1
 void core1_entry() {
-    pt_add_thread(protothread_vga);
+    // pt_add_thread(protothread_vga);
+    // pt_add_thread(protothread_serial_core1);
     pt_schedule_start;
 }
 
