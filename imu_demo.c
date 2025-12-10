@@ -22,7 +22,7 @@
 // Include custom libraries
 #include "mpu6050.h"
 #include "pt_cornell_rp2040_v1_4.h"
-#include "vga16_graphics_v2.h"
+// #include "vga16_graphics_v2.h"
 
 // Some macros for max/min/abs
 #define min(a, b) ((a < b) ? a : b)
@@ -38,13 +38,14 @@
 // Some paramters for PWM
 #define WRAPVAL 5000
 #define CLKDIV 25.0
-uint slice_num_l; ///todo later swithc based on orientation of robot
+uint slice_num_l; /// todo later swithc based on orientation of robot
 uint slice_num_r;
 
 // Min and max motor control values
-#define MAX_CTRL 4000
-#define MIN_CTRL -4000
-#define MIN_DUTY_CYCLE 1900 //minimmum duty cycle to get the motors moving on ground
+#define MIN_DUTY_CYCLE 1900 // minimmum duty cycle to get the motors moving on ground
+#define MAX_DUTY_CYCLE 4000
+#define MAX_CTRL 2100 // 4000-1900
+#define MIN_CTRL -2100
 
 // Bias for the z-axis acceleration
 #define az_bias float2fix15(0.22)
@@ -53,18 +54,18 @@ uint slice_num_r;
 static int begin_time;
 
 typedef enum {
-  FORWARDS,
-  BACKWARDS,
-  STABLE
+    FORWARDS,
+    BACKWARDS,
+    STABLE
 } direction_state_t;
-volatile direction_state_t current_direction  = STABLE; // assume default not pressed
+volatile direction_state_t current_direction = STABLE; // assume default not pressed
 
 // Arrays in which raw measurements will be stored
 fix15 acceleration[3], gyro[3];
 fix15 complementary_angle;
 fix15 accel_angle, gyro_angle;
 
-volatile int target_angle = 0; //always want target angle to be 0 because that is it facing upwards
+volatile int target_angle = 0; // always want target angle to be 0 because that is it facing upwards
 
 // Character array for VGA graph text
 char screentext[40];
@@ -76,7 +77,6 @@ int threshold = 250;
 // Semaphores
 static struct pt_sem vga_semaphore;
 static struct pt_sem serial_semaphore;
-static struct pt_sem button_sempahore;
 
 // PWM duty cycle
 volatile int control_l = 0;
@@ -85,9 +85,9 @@ volatile int filtered_control = 0;
 volatile int filtered_old_control = 0;
 
 // PID parameters
-volatile float kp = 1700;
-volatile float kd = 800;
-volatile float ki = 27;
+volatile float kp = 890;
+volatile float kd = 420;
+volatile float ki = 10; // next time tune look at georige suggestions
 
 volatile int PID_output;
 
@@ -123,43 +123,39 @@ void on_pwm_wrap() {
 
     // Complementary angle (degrees - 15.16 fixed point)
     complementary_angle = multfix15(gyro_angle, zeropt999) + multfix15(accel_angle, zeropt001);
-    if(current_direction == STABLE){
-        if(fix2float15(complementary_angle) >= 0){ // prevent positive bias/lean
-        target_angle = -5;
+    if (current_direction == STABLE) {
+        if (fix2float15(complementary_angle) >= 0) { // prevent positive bias/lean
+            target_angle = -6;
+        } else { // address negative bias
+            target_angle = -2;
         }
-        else{ // address negative bias
-            target_angle = -1;
-        }
-    }
-    else{
-        if(counter > 0){ // have target angle positive so go backwards
-            counter++; // do it for 200 ms (frequency of ISR is 1000times a second)
-            if(counter >= 30){
-                counter = 0; // reset counter 
+    } else {
+        if (counter > 0) { // have target angle positive so go backwards
+            counter++;     // do it for 200 ms (frequency of ISR is 1000times a second)
+            if (counter >= 30) {
+                counter = 0; // reset counter
             }
-            if(current_direction == BACKWARDS){
+            if (current_direction == BACKWARDS) {
                 target_angle = 4;
-            }
-            else if(current_direction == FORWARDS){
+            } else if (current_direction == FORWARDS) {
                 target_angle = -7;
             }
         }
         // if equal 0 then stable from the reset above and if negative it is counting to stay negative until 2 seconds has passed
-        else if(counter <= 0){ // keep target angle stable for 2 seconds
+        else if (counter <= 0) { // keep target angle stable for 2 seconds
             counter--;
-            if(counter <= -1250){
+            if (counter <= -1250) {
                 counter = 1; // go back to greater than 0 so go to top conditional of going forwards a bit
             }
             // stabalization code
-            if(fix2float15(complementary_angle) >= 0){ // prevent positive bias/lean
-                target_angle = -5;
-                }
-            else{ // address negative bias
-                target_angle = -1;
+            if (fix2float15(complementary_angle) >= 0) { // prevent positive bias/lean
+                target_angle = -6;
+            } else { // address negative bias
+                target_angle = -2;
             }
         }
     }
-    
+
     float error = target_angle - fix2float15(complementary_angle);
 
     // Accumulate and clamp error sum for integration term
@@ -169,22 +165,20 @@ void on_pwm_wrap() {
 
     // negate PID output so robot stays upright
     PID_output = (error * kp) + fix2int15(gy) * kd + error_sum * ki;
-    if(PID_output > MAX_CTRL){
+    if (PID_output > MAX_CTRL) {
         PID_output = MAX_CTRL;
-    }
-    else if(PID_output < MIN_CTRL){
+    } else if (PID_output < MIN_CTRL) {
         PID_output = MIN_CTRL;
     }
-    if(PID_output > 0 && PID_output < MIN_DUTY_CYCLE){
-        PID_output = MIN_DUTY_CYCLE;
+    if (PID_output >= 0) {
+        PID_output += MIN_DUTY_CYCLE;
+    } else {
+        PID_output -= MIN_DUTY_CYCLE;
     }
-    else if(PID_output < 0 && PID_output > -MIN_DUTY_CYCLE){
-        PID_output = -MIN_DUTY_CYCLE;
-    }
-    //todo for now both go same dir, later can vary each speed and dir for turning
+    // todo for now both go same dir, later can vary each speed and dir for turning
 
     // todo first task to just have balance
-    //todo second forwards and backwards
+    // todo second forwards and backwards
     // todo thrid turning
 
     // full charge 1100 pwm is the min needed to get the motors moving
@@ -194,13 +188,12 @@ void on_pwm_wrap() {
     // pwm_set_chan_level(slice_num_r, PWM_CHAN_A, kp);
     // pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
 
-    if(PID_output <= 0){
+    if (PID_output <= 0) {
         pwm_set_chan_level(slice_num_l, PWM_CHAN_A, PID_output);
         pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
         pwm_set_chan_level(slice_num_r, PWM_CHAN_A, PID_output);
         pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
-    }
-    else{
+    } else {
         pwm_set_chan_level(slice_num_l, PWM_CHAN_A, 0);
         pwm_set_chan_level(slice_num_l, PWM_CHAN_B, -PID_output);
         pwm_set_chan_level(slice_num_r, PWM_CHAN_A, 0);
@@ -210,7 +203,7 @@ void on_pwm_wrap() {
     // control_l = max(MIN_CTRL, PID_output);
     // control_l = min(control_l, MAX_CTRL);
     // control_r = -control_l;
-     
+
     // pwm_set_chan_level(slice_num_l, PWM_CHAN_A, 0);
     // pwm_set_chan_level(slice_num_l, PWM_CHAN_B,3000);
     // // pwm_set_chan_level(slice_num_r, PWM_CHAN_A, 3000);
@@ -241,23 +234,23 @@ void on_pwm_wrap() {
 // static PT_THREAD(protothread_vga(struct pt *pt)) {
 //     // Indicate start of thread
 //     PT_BEGIN(pt);
-
+//
 //     // We will start drawing at column 81
 //     static int xcoord = 81;
-
+//
 //     // Rescale the measurements for display
 //     static float OldRange = 500.; // (+/- 250)
 //     static float NewRange = 150.; // (looks nice on VGA)
 //     static float OldMin = -250.;
 //     static float OldMax = 250.;
-
+//
 //     // Control rate of drawing
 //     static int throttle;
-
+//
 //     // Draw the static aspects of the display
 //     setTextSize(1);
 //     setTextColor(WHITE);
-
+//
 //     // Draw bottom plot
 //     drawHLine(75, 430, 5, CYAN);
 //     drawHLine(75, 355, 5, CYAN);
@@ -269,7 +262,7 @@ void on_pwm_wrap() {
 //     sprintf(screentext, "3500");
 //     setCursor(50, 280);
 //     writeString(screentext);
-
+//
 //     // Draw top plot
 //     drawHLine(75, 230, 5, CYAN);
 //     drawHLine(75, 155, 5, CYAN);
@@ -284,7 +277,7 @@ void on_pwm_wrap() {
 //     sprintf(screentext, "-90");
 //     setCursor(45, 225);
 //     writeString(screentext);
-
+//
 //     while (true) {
 //         // Wait on semaphore
 //         PT_SEM_WAIT(pt, &vga_semaphore);
@@ -294,29 +287,29 @@ void on_pwm_wrap() {
 //         if (throttle >= threshold) {
 //             // Zero drawspeed controller
 //             throttle = 0;
-
+//
 //             // Erase a column
 //             drawVLine(xcoord, 0, 480, BLACK);
-
+//
 //             // Draw bottom  plot (multiply by 0.089 to scale from +/-3500 to +/-250)
 //             // Low pass motor control signal so the graph is less noisy
 //             filtered_old_control = filtered_control;
 //             filtered_control = filtered_old_control + ((control_l - filtered_old_control) >> 5);
 //             drawPixel(xcoord, 430 - (int)(NewRange * ((float)((filtered_control * 0.0714) - OldMin) / OldRange)), ORANGE);
-
+//
 //             // Draw top plot (multiply by 2.8  to scale from +/-90 to +/-250)
 //             // drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(gyro_angle) * 2.8) - OldMin) / OldRange)), RED);
 //             // drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(accel_angle) * 2.8) - OldMin) / OldRange)), GREEN);
 //             drawPixel(xcoord, 230 - (int)(NewRange * ((float)((fix2float15(complementary_angle) * 2.8) - OldMin) / OldRange)), WHITE);
 //             drawPixel(xcoord, 230 - (int)(NewRange * ((float)(((target_angle) * 2.8) - OldMin) / OldRange)), BLUE);
-
+//
 //             // Update horizontal cursor
 //             if (xcoord < 609) {
 //                 xcoord += 1;
 //             } else {
 //                 xcoord = 81;
 //             }
-
+//
 //             // Draw PID info text on screen
 //             setTextColorBig(WHITE, BLACK);
 //             setCursor(10, 20);
@@ -332,8 +325,6 @@ void on_pwm_wrap() {
 static PT_THREAD(protothread_serial_core1(struct pt *pt)) {
     // Indicate start of thread
     PT_BEGIN(pt);
-
-    
 
     // Control rate of drawing
     static int throttle;
@@ -351,7 +342,6 @@ static PT_THREAD(protothread_serial_core1(struct pt *pt)) {
             sprintf(pt_serial_out_buffer, "target angle: %d\n", target_angle);
 
             serial_write;
-            
         }
     }
     // Indicate end of thread
@@ -372,16 +362,17 @@ static PT_THREAD(protothread_serial(struct pt *pt)) {
         // convert input string to number
         sscanf(pt_serial_in_buffer, "%c", &classifier);
 
-        if (classifier == 't') {
-            sprintf(pt_serial_out_buffer, "timestep: ");
-            serial_write;
-            serial_read;
-            // convert input string to number
-            sscanf(pt_serial_in_buffer, "%d", &test_in);
-            if (test_in > 0) {
-                threshold = test_in;
-            }
-        } else if (classifier == 'p') {
+        // if (classifier == 't') {
+        //     sprintf(pt_serial_out_buffer, "timestep: ");
+        //     serial_write;
+        //     serial_read;
+        //     // convert input string to number
+        //     sscanf(pt_serial_in_buffer, "%d", &test_in);
+        //     if (test_in > 0) {
+        //         threshold = test_in;
+        //     }
+        // } else 
+        if (classifier == 'p') {
             sprintf(pt_serial_out_buffer, "kp: ");
             serial_write;
             serial_read;
@@ -429,24 +420,19 @@ static PT_THREAD(protothread_serial(struct pt *pt)) {
             serial_read;
             sscanf(pt_serial_in_buffer, "%d", &test_in);
             control_r = -test_in;
-        }
-        else if (classifier == 'm') {
+        } else if (classifier == 'm') {
             sprintf(pt_serial_out_buffer, "positive number to go forwards, negative number to go backwards, 0 to stop: ");
             serial_write;
             serial_read;
             sscanf(pt_serial_in_buffer, "%d", &test_in);
             if (test_in > 0) {
                 current_direction = FORWARDS;
-            }
-            else if(test_in < 0){
+            } else if (test_in < 0) {
                 current_direction = BACKWARDS;
-            }
-            else{
+            } else {
                 current_direction = STABLE;
             }
-        } 
-        
-        else {
+        } else {
             sprintf(pt_serial_out_buffer, "invalid command");
             serial_write;
         }
@@ -470,7 +456,7 @@ int main() {
     stdio_init_all();
 
     // Initialize VGA
-    initVGA();
+    // initVGA();
 
     ////////////////////////////////////////////////////////////////////////
     ///////////////////////// I2C CONFIGURATION ////////////////////////////
@@ -524,8 +510,6 @@ int main() {
 
     // Start the channel
     pwm_set_mask_enabled(11u << slice_num_l);
-
-    
 
     ////////////////////////////////////////////////////////////////////////
     ///////////////////////////// ROCK AND ROLL ////////////////////////////
