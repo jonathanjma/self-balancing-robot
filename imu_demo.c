@@ -59,7 +59,7 @@ typedef enum {
     BACKWARDS,
     STABLE
 } direction_state_t;
-volatile direction_state_t current_direction = BACKWARDS; // assume default not pressed
+volatile direction_state_t current_direction = STABLE; // assume default not pressed
 
 // Arrays in which raw measurements will be stored
 fix15 acceleration[3], gyro[3];
@@ -96,6 +96,7 @@ float error_sum = 0;
 float error_sum_max = 2000;
 
 volatile int counter = 0;
+volatile int global_counter = 0;
 
 #define IMU_POWER 26
 #define LED_PIN 25
@@ -131,12 +132,30 @@ void on_pwm_wrap() {
 
     // Complementary angle (degrees - 15.16 fixed point)
     complementary_angle = multfix15(gyro_angle, zeropt999) + multfix15(accel_angle, zeropt001);
+    if (global_counter > 19000) {
+        current_direction = STABLE; // after 17 total seconds (4 seconds after backwards) stay stable forever
+        gpio_put(LED_PIN, 1);
+    } else if (global_counter > 15000) {
+        current_direction = BACKWARDS; // after 13 total seconds (5 seconds after stable) go backwards
+        gpio_put(LED_PIN, 0);
+    } else if (global_counter > 8000) {
+        current_direction = STABLE; // after 8 total seconds (3 seconds after stable) be stable for 5 seconds
+        gpio_put(LED_PIN, 1);
+    } else if (global_counter > 5000) {
+        current_direction = FORWARDS; // after 5 seconds go forwards
+        gpio_put(LED_PIN, 0);
+    } else {
+        current_direction = STABLE; // first 5 seconds be stable
+        gpio_put(LED_PIN, 1);
+    }
+
     if (current_direction == STABLE) {
         if (fix2float15(complementary_angle) >= true_zero_correction) { // prevent positive bias/lean
             target_angle = positive_bias_correction;
         } else { // address negative bias
             target_angle = negative_bias_correction;
         }
+        counter = 0;
     } else {
         if (counter > 0) { // have target angle positive so go backwards
             counter++;     // do it for 200 ms (frequency of ISR is 1000times a second)
@@ -146,7 +165,7 @@ void on_pwm_wrap() {
             if (current_direction == BACKWARDS) {
                 target_angle = -11;
             } else if (current_direction == FORWARDS) {
-                target_angle = 6;
+                target_angle = 5;
             }
         }
         // if equal 0 then stable from the reset above and if negative it is counting to stay negative until 2 seconds has passed
@@ -200,7 +219,7 @@ void on_pwm_wrap() {
         pwm_set_chan_level(slice_num_r, PWM_CHAN_A, 0);
         pwm_set_chan_level(slice_num_r, PWM_CHAN_B, -PID_output);
     }
-
+    global_counter++; // update global counter each interrupt
     // Signal VGA to draw
     PT_SEM_SIGNAL(pt, &vga_semaphore);
     PT_SEM_SIGNAL(pt, &serial_semaphore);
