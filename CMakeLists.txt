@@ -37,7 +37,7 @@ pico_generate_pio_header(MPU6050_IMU ${CMAKE_CURRENT_LIST_DIR}/rgb.pio)
 target_sources(MPU6050_IMU PRIVATE imu_demo.c vga16_graphics_v2.c mpu6050.c)
 
 # Add pico_multicore which is required for multicore functionality
-target_link_libraries(MPU6050_IMU pico_stdlib pico_bootsel_via_double_reset pico_multicore hardware_pwm hardware_dma hardware_irq hardware_adc hardware_pio hardware_i2c hardware_clocks)
+target_link_libraries(MPU6050_IMU pico_stdlib pico_bootsel_via_double_reset pico_multicore hardware_pwm hardware_dma hardware_irq hardware_adc hardware_pio hardware_i2c hardware_clocks hardware_uart)
 
 # create map/bin/hex file etc.
 pico_add_extra_outputs(MPU6050_IMU)

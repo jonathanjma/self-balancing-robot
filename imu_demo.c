@@ -19,6 +19,7 @@
 #include "hardware/irq.h"
 #include "hardware/pio.h"
 #include "hardware/pwm.h"
+#include "hardware/uart.h"
 // Include custom libraries
 #include "mpu6050.h"
 #include "pt_cornell_rp2040_v1_4.h"
@@ -58,7 +59,7 @@ typedef enum {
     BACKWARDS,
     STABLE
 } direction_state_t;
-volatile direction_state_t current_direction = STABLE; // assume default not pressed
+volatile direction_state_t current_direction = BACKWARDS; // assume default not pressed
 
 // Arrays in which raw measurements will be stored
 fix15 acceleration[3], gyro[3];
@@ -97,6 +98,13 @@ float error_sum_max = 2000;
 volatile int counter = 0;
 
 #define IMU_POWER 26
+#define LED_PIN 25
+#define UART_ID uart0
+#define UART_RX_PIN 13
+
+const int positive_bias_correction = -10;
+const int negative_bias_correction = 4;
+const int true_zero_correction = -2;
 
 // Interrupt service routine
 void on_pwm_wrap() {
@@ -124,34 +132,34 @@ void on_pwm_wrap() {
     // Complementary angle (degrees - 15.16 fixed point)
     complementary_angle = multfix15(gyro_angle, zeropt999) + multfix15(accel_angle, zeropt001);
     if (current_direction == STABLE) {
-        if (fix2float15(complementary_angle) >= 0) { // prevent positive bias/lean
-            target_angle = -6;
+        if (fix2float15(complementary_angle) >= true_zero_correction) { // prevent positive bias/lean
+            target_angle = positive_bias_correction;
         } else { // address negative bias
-            target_angle = -2;
+            target_angle = negative_bias_correction;
         }
     } else {
         if (counter > 0) { // have target angle positive so go backwards
             counter++;     // do it for 200 ms (frequency of ISR is 1000times a second)
-            if (counter >= 30) {
+            if (counter >= 150) {
                 counter = 0; // reset counter
             }
             if (current_direction == BACKWARDS) {
-                target_angle = 4;
+                target_angle = -11;
             } else if (current_direction == FORWARDS) {
-                target_angle = -7;
+                target_angle = 6;
             }
         }
         // if equal 0 then stable from the reset above and if negative it is counting to stay negative until 2 seconds has passed
         else if (counter <= 0) { // keep target angle stable for 2 seconds
             counter--;
-            if (counter <= -1250) {
+            if (counter <= -2750) {
                 counter = 1; // go back to greater than 0 so go to top conditional of going forwards a bit
             }
             // stabalization code
-            if (fix2float15(complementary_angle) >= 0) { // prevent positive bias/lean
-                target_angle = -6;
+            if (fix2float15(complementary_angle) >= true_zero_correction) { // prevent positive bias/lean
+                target_angle = positive_bias_correction;
             } else { // address negative bias
-                target_angle = -2;
+                target_angle = negative_bias_correction;
             }
         }
     }
@@ -175,13 +183,6 @@ void on_pwm_wrap() {
     } else {
         PID_output -= MIN_DUTY_CYCLE;
     }
-    // todo for now both go same dir, later can vary each speed and dir for turning
-
-    // todo first task to just have balance
-    // todo second forwards and backwards
-    // todo thrid turning
-
-    // full charge 1100 pwm is the min needed to get the motors moving
 
     // pwm_set_chan_level(slice_num_l, PWM_CHAN_A, kp);
     // pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
@@ -199,31 +200,6 @@ void on_pwm_wrap() {
         pwm_set_chan_level(slice_num_r, PWM_CHAN_A, 0);
         pwm_set_chan_level(slice_num_r, PWM_CHAN_B, -PID_output);
     }
-
-    // control_l = max(MIN_CTRL, PID_output);
-    // control_l = min(control_l, MAX_CTRL);
-    // control_r = -control_l;
-
-    // pwm_set_chan_level(slice_num_l, PWM_CHAN_A, 0);
-    // pwm_set_chan_level(slice_num_l, PWM_CHAN_B,3000);
-    // // pwm_set_chan_level(slice_num_r, PWM_CHAN_A, 3000);
-    // pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 00);
-    // // Update duty cycle
-    // if (control_l < 0) {
-    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_A, control_l);
-    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
-    // } else {
-    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_A, 0);
-    //     pwm_set_chan_level(slice_num_l, PWM_CHAN_B, abs(control_l));
-    // }
-    // if (control_r < 0) {
-    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_A, control_r);
-    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
-
-    // } else {
-    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_A, 0);
-    //     pwm_set_chan_level(slice_num_r, PWM_CHAN_B, abs(control_r));
-    // }
 
     // Signal VGA to draw
     PT_SEM_SIGNAL(pt, &vga_semaphore);
@@ -339,8 +315,9 @@ static PT_THREAD(protothread_serial_core1(struct pt *pt)) {
             // Zero drawspeed controller
             throttle = 0;
             // sprintf(pt_serial_out_buffer, "current PID output: %d\n", PID_output);
+            sprintf(pt_serial_out_buffer, "current angle: %f\n", fix2float15(complementary_angle));
+            serial_write;
             sprintf(pt_serial_out_buffer, "target angle: %d\n", target_angle);
-
             serial_write;
         }
     }
@@ -362,16 +339,6 @@ static PT_THREAD(protothread_serial(struct pt *pt)) {
         // convert input string to number
         sscanf(pt_serial_in_buffer, "%c", &classifier);
 
-        // if (classifier == 't') {
-        //     sprintf(pt_serial_out_buffer, "timestep: ");
-        //     serial_write;
-        //     serial_read;
-        //     // convert input string to number
-        //     sscanf(pt_serial_in_buffer, "%d", &test_in);
-        //     if (test_in > 0) {
-        //         threshold = test_in;
-        //     }
-        // } else 
         if (classifier == 'p') {
             sprintf(pt_serial_out_buffer, "kp: ");
             serial_write;
@@ -408,18 +375,6 @@ static PT_THREAD(protothread_serial(struct pt *pt)) {
             if (test_in >= -90 && test_in <= 90) {
                 target_angle = test_in;
             }
-        } else if (classifier == 'l') {
-            sprintf(pt_serial_out_buffer, "control_l: ");
-            serial_write;
-            serial_read;
-            sscanf(pt_serial_in_buffer, "%d", &test_in);
-            control_l = test_in;
-        } else if (classifier == 'r') {
-            sprintf(pt_serial_out_buffer, "control_r: ");
-            serial_write;
-            serial_read;
-            sscanf(pt_serial_in_buffer, "%d", &test_in);
-            control_r = -test_in;
         } else if (classifier == 'm') {
             sprintf(pt_serial_out_buffer, "positive number to go forwards, negative number to go backwards, 0 to stop: ");
             serial_write;
@@ -443,7 +398,7 @@ static PT_THREAD(protothread_serial(struct pt *pt)) {
 // Entry point for core 1
 void core1_entry() {
     // pt_add_thread(protothread_vga);
-    // pt_add_thread(protothread_serial_core1);
+    pt_add_thread(protothread_serial_core1);
     pt_schedule_start;
 }
 
@@ -510,6 +465,16 @@ int main() {
 
     // Start the channel
     pwm_set_mask_enabled(11u << slice_num_l);
+
+    // Initialize the LED pin
+    gpio_init(LED_PIN);
+    gpio_set_dir(LED_PIN, GPIO_OUT);
+
+    // Initialize the UART channel and RX pin
+    // uart_init(UART_ID, 4800);
+    // uart_set_format(UART_ID, 8, 1, UART_PARITY_ODD);
+    // gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+    // gpio_pull_up(UART_RX_PIN);
 
     ////////////////////////////////////////////////////////////////////////
     ///////////////////////////// ROCK AND ROLL ////////////////////////////
