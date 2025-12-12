@@ -103,9 +103,9 @@ volatile int global_counter = 0;
 #define UART_ID uart0
 #define UART_RX_PIN 13
 
-const int positive_bias_correction = -10;
-const int negative_bias_correction = 4;
-const int true_zero_correction = -2;
+const int positive_bias_correction = -11;
+const int negative_bias_correction = 3;
+const int true_zero_correction = -4;
 
 // Interrupt service routine
 void on_pwm_wrap() {
@@ -163,7 +163,7 @@ void on_pwm_wrap() {
                 counter = 0; // reset counter
             }
             if (current_direction == BACKWARDS) {
-                target_angle = -11;
+                target_angle = -14;
             } else if (current_direction == FORWARDS) {
                 target_angle = 5;
             }
