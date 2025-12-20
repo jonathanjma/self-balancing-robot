@@ -1,5 +1,7 @@
 /**
- * Self-Balancing Robot!
+ * Aidan Chan (amc564@cornell.edu), Jonathan Ma (jjm498@cornell.edu), Ayushi Raina (ar929@cornell.edu)
+ * IMU code inspired by V. Hunter Adams (vha3@cornell.edu)
+ * Self-balancing two-wheeled robot 
  */
 
 // Include standard libraries
@@ -21,9 +23,9 @@
 #include "hardware/pwm.h"
 #include "hardware/uart.h"
 // Include custom libraries
-#include "mpu6050.h"
-#include "pt_cornell_rp2040_v1_4.h"
-// #include "vga16_graphics_v2.h"
+#include "mpu6050.h" // for the imu
+#include "pt_cornell_rp2040_v1_4.h" // for protothreads 
+// #include "vga16_graphics_v2.h" // used when debugging the complementary filter with the VGA display
 
 // Some macros for max/min/abs
 #define min(a, b) ((a < b) ? a : b)
@@ -31,21 +33,21 @@
 #define abs(a) ((a > 0) ? a : -a)
 
 // GPIO for PWM
-#define PWM_L_FW 4
-#define PWM_L_BW 5
-#define PWM_R_FW 6
-#define PWM_R_BW 7
+#define PWM_L_FW 4 // PWM for the left motor going forwards
+#define PWM_L_BW 5 // PWM for the left motor going backwards
+#define PWM_R_FW 6 // PWM for the right motor going forwards
+#define PWM_R_BW 7 // PWM for the right motor going backwards
 
-// Some paramters for PWM
+// Some paramters for PWM so that it has a frequency of 1kHz
 #define WRAPVAL 5000
-#define CLKDIV 25.0
-uint slice_num_l; /// todo later swithc based on orientation of robot
+#define CLKDIV 25.0 
+uint slice_num_l; 
 uint slice_num_r;
 
 // Min and max motor control values
 #define MIN_DUTY_CYCLE 1900 // minimmum duty cycle to get the motors moving on ground
 #define MAX_DUTY_CYCLE 4000
-#define MAX_CTRL 2100 // 4000-1900
+#define MAX_CTRL 2100 // 4000-1900 = 2100, actual range of our PID control output
 #define MIN_CTRL -2100
 
 // Bias for the z-axis acceleration
@@ -203,11 +205,6 @@ void on_pwm_wrap() {
         PID_output -= MIN_DUTY_CYCLE;
     }
 
-    // pwm_set_chan_level(slice_num_l, PWM_CHAN_A, kp);
-    // pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
-    // pwm_set_chan_level(slice_num_r, PWM_CHAN_A, kp);
-    // pwm_set_chan_level(slice_num_r, PWM_CHAN_B, 0);
-
     if (PID_output <= 0) {
         pwm_set_chan_level(slice_num_l, PWM_CHAN_A, PID_output);
         pwm_set_chan_level(slice_num_l, PWM_CHAN_B, 0);
@@ -225,7 +222,7 @@ void on_pwm_wrap() {
     PT_SEM_SIGNAL(pt, &serial_semaphore);
 }
 
-// // Thread that draws to VGA display
+// // Thread that draws to VGA display, commented out because used for debugging and not final implementation
 // static PT_THREAD(protothread_vga(struct pt *pt)) {
 //     // Indicate start of thread
 //     PT_BEGIN(pt);
@@ -488,13 +485,7 @@ int main() {
     // Initialize the LED pin
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
-
-    // Initialize the UART channel and RX pin
-    // uart_init(UART_ID, 4800);
-    // uart_set_format(UART_ID, 8, 1, UART_PARITY_ODD);
-    // gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-    // gpio_pull_up(UART_RX_PIN);
-
+    
     ////////////////////////////////////////////////////////////////////////
     ///////////////////////////// ROCK AND ROLL ////////////////////////////
     ////////////////////////////////////////////////////////////////////////
