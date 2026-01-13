@@ -4,6 +4,6 @@ This is the codebase for a two-wheeled self-balancing robot which uses PID contr
 
 To see the robot in action, see the [YouTube video here](https://youtu.be/Jd0DRI0JFwQ)!
 
-To see more information about the robot's design, see our webpage here: Link TBD
+To see more information about the robot's design, see our webpage [here](https://ece4760.github.io/Projects/Fall2025/amc564_jjm498_ar929/FinalWebsite.html)!
 
 ![](robot.png)
